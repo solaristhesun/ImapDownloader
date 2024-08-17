@@ -9,15 +9,24 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Net.Mail;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 
 namespace Securcube.ImapDownloader.Data
 {
+    public static class StringExt
+    {
+        public static string Truncate(this string value, int maxLength)
+        {
+            if (string.IsNullOrEmpty(value)) return value;
+            return value.Length <= maxLength ? value : value.Substring(0, maxLength);
+        }
+    }
+
     class Downloader
     {
-
         internal static async Task<List<EmailFolder>> GetAllFoldersAsync(DataContext dc)
         {
             return await Task.Run(() => GetAllFolders(dc));
@@ -218,6 +227,8 @@ namespace Securcube.ImapDownloader.Data
                         destZipFolder = string.Join("_", destZipFolder.Split(illegalChars.ToArray()));
 
                         string messageIdSafeName = "";
+                        string messageSubjectSafeName = "empty";
+                        string messageSafeSender = "";
 
                         int downloadedEmails = 0;
 
@@ -288,6 +299,16 @@ namespace Securcube.ImapDownloader.Data
                             if (folder.Selected == false)
                                 continue;
 
+                            if (msg.From.Count > 0)
+                            {
+                                MailboxAddress sender = msg.From[0] as MailboxAddress;
+                                messageSafeSender = sender.Address;
+                            }
+                            else
+                            {
+                                messageSafeSender = "empty";
+                            }
+
                             // msg not exsist
                             if (msg.From == null)
                             {
@@ -299,6 +320,9 @@ namespace Securcube.ImapDownloader.Data
                             folder.DownloadedItems++;
 
                             messageIdSafeName = System.Text.RegularExpressions.Regex.Replace(msg.Headers["Message-ID"] + "", "[<>\\/:]", "");
+                            messageSubjectSafeName = msg.Subject ?? "empty";
+                            messageSubjectSafeName = System.Text.RegularExpressions.Regex.Replace(messageSubjectSafeName, "[^a-zA-Z0-9 -]", "").Truncate(50);
+                            messageSafeSender = System.Text.RegularExpressions.Regex.Replace(messageSafeSender, @"[^a-zA-Z0-9_\-@\.]", "").Truncate(30);
 
                             string msgPrefix = item.UniqueId + "";
 
@@ -312,7 +336,10 @@ namespace Securcube.ImapDownloader.Data
                                 messageIdSafeName = Guid.NewGuid().ToString();
                             }
 
-                            var destFileName = destZipFolder + "\\" + msgPrefix + "_" + messageIdSafeName + ".eml";
+                            //string senderAddress = msg.From;
+                    
+                            //var destFileName = destZipFolder + "\\" + msgPrefix + "_" + messageIdSafeName + ".eml";
+                            var destFileName = destZipFolder + "\\" + msgPrefix + "_" + messageSafeSender + "_" + messageSubjectSafeName + ".eml";
 
                             lock (writeEntryBlock)
                             {
