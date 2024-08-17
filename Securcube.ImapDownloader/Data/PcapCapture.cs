@@ -50,17 +50,8 @@ namespace Securcube.ImapDownloader.Data
 
                 using (PacketDumpFile dumpFile = communicator.OpenDump(OutputFile))
                 {
-
-                    try
-                    {
-                        // start the capture
-                        communicator.ReceivePackets(0, dumpFile.Dump);
-                    }
-                    catch (Exception)
-                    {
-                        // .... why??
-                    }
-
+                    // start the capture
+                    communicator.ReceivePackets(0, dumpFile.Dump);
                 }
             }
         }
