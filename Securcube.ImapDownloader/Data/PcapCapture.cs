@@ -7,8 +7,6 @@ namespace Securcube.ImapDownloader.Data
     public class PcapCapture : IDisposable
     {
 
-        PacketDumpFile dumpFile { get; set; }
-        PacketCommunicator communicator { get; set; }
         LivePacketDevice CapturePcapDevice { get; set; }
         public string OutputFile { get; private set; }
 
@@ -41,38 +39,36 @@ namespace Securcube.ImapDownloader.Data
         {
             IsCapturing = true;
             // Open the device
-            communicator =
-                           CapturePcapDevice.Open(65536,                                  // portion of the packet to capture
-                                                                                          // 65536 guarantees that the whole packet will be captured on all the link layers
-                                               PacketDeviceOpenAttributes.Promiscuous,    // promiscuous mode
-                                               1000);                                     // read timeout
-
-            dumpFile = communicator.OpenDump(OutputFile);
-
-            try
+            using (PacketCommunicator communicator =
+                            CapturePcapDevice.Open(65536,                                  // portion of the packet to capture
+                                                                                           // 65536 guarantees that the whole packet will be captured on all the link layers
+                                                PacketDeviceOpenAttributes.Promiscuous,    // promiscuous mode
+                                                1000))                                     // read timeout
             {
-                // start the capture
-                communicator.ReceivePackets(0, dumpFile.Dump);
-            }
-            catch (Exception ex)
-            {
-                // .... why??
-            }
 
+                communicator.SetFilter("port imap");
+
+                using (PacketDumpFile dumpFile = communicator.OpenDump(OutputFile))
+                {
+
+                    try
+                    {
+                        // start the capture
+                        communicator.ReceivePackets(0, dumpFile.Dump);
+                    }
+                    catch (Exception)
+                    {
+                        // .... why??
+                    }
+
+                }
+            }
         }
 
         internal void StopCapture()
         {
             if (capturingThread != null)
             {
-
-                communicator.Break();
-
-                dumpFile.Flush();
-                dumpFile.Dispose();
-
-                communicator.Dispose();
-
                 capturingThread.Abort();
             }
             capturingThread = null;
