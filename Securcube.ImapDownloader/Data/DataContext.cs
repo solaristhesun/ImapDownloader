@@ -91,5 +91,7 @@ namespace SecurCube.ImapDownloader.Data
             set { SetField(ref mergeFolders, value, "MergeFolders"); }
         }
 
+
+
     }
 }

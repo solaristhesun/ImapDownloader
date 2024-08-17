@@ -2,7 +2,6 @@
 using MailKit.Net.Imap;
 using MimeKit;
 using MimeKit.IO;
-using PcapDotNet.Core;
 using SecurCube.ImapDownloader.Data;
 using System;
 using System.Collections.Concurrent;
@@ -45,6 +44,7 @@ namespace Securcube.ImapDownloader.Data
 
                 foreach (var folder in folders)
                 {
+
                     myFodlers.Add(new EmailFolder()
                     {
                         Folder = folder.FullName,
@@ -54,6 +54,7 @@ namespace Securcube.ImapDownloader.Data
                         Flags = folder.Attributes,
                         Unread = folder.Unread,
                     });
+
                 }
 
                 dc.EmailFolders = myFodlers;
@@ -102,25 +103,12 @@ namespace Securcube.ImapDownloader.Data
         internal static int TotalMails = 0;
         internal static int ProgressMails = 0;
 
-
-
-        internal async static Task<long> DownloadMailsAsync(DataContext dc, LivePacketDevice CapturePcapDevice)
+        internal async static Task<long> DownloadMailsAsync(DataContext dc)
         {
-
-            long result = 0;
-
-            using (PcapCapture pcap = new PcapCapture(CapturePcapDevice, dc.DestinationFolder + ".pcap"))
-            {
-                pcap.StartCapture();
-                result = await Task.Run(() => DownloadMails(dc, pcap));
-                pcap.StartCapture();
-            }
-
-            return result;
-
+            return await Task.Run(() => DownloadMails(dc));
         }
 
-        private static long DownloadMails(DataContext dc, PcapCapture pcap)
+        private static long DownloadMails(DataContext dc)
         {
 
             List<string> log = new List<string>();
@@ -171,242 +159,199 @@ namespace Securcube.ImapDownloader.Data
                 Directory.CreateDirectory(superDir);
             }
 
-            if (!dc.MergeFolders)
+            // Delete previous log file
+            if (!File.Exists(logFileName))
             {
-                // Delete previous log file
-                if (File.Exists(logFileName))
-                {
-                    File.Delete(logFileName);
-                }
-                // Delete previous pcap file
-                if (File.Exists(pcap.OutputFile))
-                {
-                    try
-                    {
-                        File.Delete(pcap.OutputFile);
-                    }
-                    catch { }
-                }
+                File.Delete(logFileName);
             }
 
             object writeEntryBlock = new object();
 
-            using (FileStream zipToOpen = new FileStream(dc.DestinationFolder, FileMode.OpenOrCreate))
+            ZipArchiveMode openMode = ZipArchiveMode.Create;
+
+            if (File.Exists(dc.DestinationFolder) && dc.MergeFolders)
+            {
+                openMode = ZipArchiveMode.Update;
+            }
+
+            using (ZipArchive archive = ZipFile.Open(dc.DestinationFolder, openMode))
             {
 
-                ZipArchiveMode openMode = ZipArchiveMode.Create;
-
-                if (File.Exists(dc.DestinationFolder) && dc.MergeFolders)
-                {
-                    openMode = ZipArchiveMode.Update;
-                }
-
-                using (ZipArchive archive = new ZipArchive(zipToOpen, openMode))
+                Parallel.ForEach(dc.EmailFolders, new ParallelOptions() { MaxDegreeOfParallelism = dc.ConcurrentThreads }, (folder) =>
                 {
 
-                    Parallel.ForEach(dc.EmailFolders, new ParallelOptions() { MaxDegreeOfParallelism = dc.ConcurrentThreads }, (folder) =>
+                    if (folder.Selected == false)
+                        return;
+
+                    // The default port for IMAP over SSL is 993.
+                    using (ImapClient client = new ImapClient())
                     {
 
-                        if (folder.Selected == false)
-                            return;
+                        client.ServerCertificateValidationCallback = (s, c, h, ee) => true;
 
-                        // The default port for IMAP over SSL is 993.
-                        using (ImapClient client = new ImapClient())
+                        try
                         {
+                            client.Connect(dc.HostName, dc.Port, dc.UseSSL);
+                        }
+                        catch (ImapProtocolException)
+                        {
+                            // try twice
+                            System.Threading.Thread.Sleep(100);
+                            client.Connect(dc.HostName, dc.Port, dc.UseSSL);
+                        }
 
-                            client.ServerCertificateValidationCallback = (s, c, h, ee) => true;
+                        client.Authenticate(dc.UserName, dc.UserPassword);
 
-                            try
-                            {
-                                client.Connect(dc.HostName, dc.Port, dc.UseSSL);
-                            }
-                            catch (ImapProtocolException)
-                            {
-                                // try twice
-                                System.Threading.Thread.Sleep(100);
-                                client.Connect(dc.HostName, dc.Port, dc.UseSSL);
-                            }
+                        ImapFolder imapFodler = (ImapFolder)client.GetFolder(folder.Folder);
 
-                            client.Authenticate(dc.UserName, dc.UserPassword);
+                        folder.IsDownloading = true;
 
-                            ImapFolder imapFodler = (ImapFolder)client.GetFolder(folder.Folder);
+                        folder.DownloadedItems = 0;
 
-                            folder.IsDownloading = true;
+                        string destZipFolder = folder.Folder.Replace(imapFodler.DirectorySeparator, '\\');
+                        // remove wrong chars
 
-                            folder.DownloadedItems = 0;
+                        var illegalChars = Path.GetInvalidFileNameChars().ToList();
+                        // remove folder separator
+                        illegalChars.Remove('\\');
 
-                            string destZipFolder = folder.Folder.Replace(imapFodler.DirectorySeparator, '\\');
-                            // remove wrong chars
+                        destZipFolder = string.Join("_", destZipFolder.Split(illegalChars.ToArray()));
 
-                            var illegalChars = Path.GetInvalidFileNameChars().ToList();
-                            // remove folder separator
-                            illegalChars.Remove('\\');
+                        string messageIdSafeName = "";
 
-                            destZipFolder = string.Join("_", destZipFolder.Split(illegalChars.ToArray()));
+                        int downloadedEmails = 0;
 
-                            string messageIdSafeName = "";
+                        try
+                        {
+                            imapFodler.Open(FolderAccess.ReadOnly);
+                        }
+                        catch (Exception)
+                        {
+                            logError.Add("Error: can't select imap folder '" + folder.Folder + "'");
+                            return;
+                        }
 
-                            try
-                            {
-                                imapFodler.Open(FolderAccess.ReadOnly);
-                            }
-                            catch (Exception)
-                            {
-                                logError.Add("Error: can't select imap folder '" + folder.Folder + "'");
-                                return;
-                            }
+                        //IList<IMessageSummary> items = imapFodler.Fetch(0, -1, MessageSummaryItems.UniqueId | MessageSummaryItems.Size);
+                        IList<IMessageSummary> items = imapFodler.Fetch(0, -1, MessageSummaryItems.UniqueId | MessageSummaryItems.Size | MessageSummaryItems.InternalDate | MessageSummaryItems.Flags);
 
-                            //IList<IMessageSummary> items = imapFodler.Fetch(0, -1, MessageSummaryItems.UniqueId | MessageSummaryItems.Size);
-                            IList<IMessageSummary> items = imapFodler.Fetch(0, -1, MessageSummaryItems.UniqueId | MessageSummaryItems.Size | MessageSummaryItems.InternalDate | MessageSummaryItems.Flags);
+                        DateTime dt = DateTime.Now;
+                        long fileSize = 0;
+                        MimeMessage msg;
 
-                            DateTime dt = DateTime.Now;
-                            long fileSize = 0;
-                            MimeMessage msg;
+                        long folderSize = items.Sum(o => o.Size ?? 0);
 
-                            long folderSize = items.Sum(o => o.Size ?? 0);
+                        List<string> AlreadyExistingEntries = new List<string>();
+                        if (dc.MergeFolders)
+                        {
+                            AlreadyExistingEntries = archive.Entries.Select(o => o.FullName).OrderBy(o => o).ToList();
+                        }
 
-                            List<string> AlreadyExistingEntries = new List<string>();
+                        foreach (var item in items)
+                        {
                             if (dc.MergeFolders)
                             {
-                                AlreadyExistingEntries = archive.Entries.Select(o => o.FullName).OrderBy(o => o).ToList();
+                                // search entry before start downloading
+                                if (AlreadyExistingEntries.Any(o => o.StartsWith(destZipFolder + "\\" + item.UniqueId + "_")))
+                                {
+                                    logError.Add("Log: message id " + item.UniqueId + " already downloaded from folder '" + folder.Folder + "'");
+                                    downloadedEmails++;
+                                    folder.DownloadedItems++;
+                                    continue;
+                                }
+                                else { }
                             }
 
-                            foreach (var item in items)
+                            dt = DateTime.Now;
+                            fileSize = 0;
+
+                            try
                             {
-                                if (dc.MergeFolders)
-                                {
-                                    // search entry before start downloading
-                                    if (AlreadyExistingEntries.Any(o => o.StartsWith(destZipFolder + "\\" + item.UniqueId + "_")))
-                                    {
-                                        logError.Add("Log: message id " + item.UniqueId + " already downloaded from folder '" + folder.Folder + "'");
-                                        totalMessagesDownloaded++;
-                                        folder.DownloadedItems++;
-                                        continue;
-                                    }
-                                    else { }
-                                }
-
-                                dt = DateTime.Now;
-                                fileSize = 0;
-
+                                msg = imapFodler.GetMessage(item.UniqueId);
+                            }
+                            catch
+                            {
+                                // Second attempt
                                 try
                                 {
                                     msg = imapFodler.GetMessage(item.UniqueId);
                                 }
-                                catch
+                                catch (Exception ex)
                                 {
-                                    // Second attempt
-                                    try
-                                    {
-                                        msg = imapFodler.GetMessage(item.UniqueId);
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        // in the meanwhile a message has been deleted.. sometimes happens
-                                        logError.Add("Error: can't download message id " + item.UniqueId + " from folder '" + folder.Folder + "'");
-                                        continue;
-                                    }
-                                }
-
-                                ProgressMails++;
-
-                                if (folder.Selected == false)
-                                    continue;
-
-                                // msg not exsist
-                                if (msg.From == null)
-                                {
-                                    log.Add("Error: can't save message id " + item.UniqueId + " from folder '" + folder.Folder + "' because has no From field");
+                                    // in the meanwhile a message has been deleted.. sometimes happens
+                                    logError.Add("Error: can't download message id " + item.UniqueId + " from folder '" + folder.Folder + "'");
                                     continue;
                                 }
-
-                                totalMessagesDownloaded++;
-                                folder.DownloadedItems++;
-
-                                messageIdSafeName = System.Text.RegularExpressions.Regex.Replace(msg.Headers["Message-ID"] + "", "[<>\\/:]", "");
-
-                                string msgPrefix = item.UniqueId + "";
-
-                                if (item.Flags != null && !item.Flags.Value.HasFlag(MessageFlags.Seen))
-                                {
-                                    msgPrefix += "_N";
-                                }
-
-                                if (string.IsNullOrEmpty(messageIdSafeName))
-                                {
-                                    messageIdSafeName = Guid.NewGuid().ToString();
-                                }
-
-                                var destFileName = destZipFolder + "\\" + msgPrefix + "_" + messageIdSafeName + ".eml";
-
-                                lock (writeEntryBlock)
-                                {
-                                    var entry = archive.CreateEntry(destFileName);
-                                    entry.LastWriteTime = item.InternalDate.Value;
-                                    using (Stream s = entry.Open())
-                                    {
-                                        msg.WriteTo(s);
-                                        fileSize = s.Position;
-                                        s.Close();
-
-                                    }
-                                }
-
-                                DownloadSpeed.Add(new Tuple<DateTime, double, long>(dt, DateTime.Now.Subtract(dt).TotalMilliseconds, fileSize));
-
-                                if (totalMessagesDownloaded % 1024 == 0)
-                                {
-                                    GCCollectUtils.CheckAndFreeMemory();
-                                    zipToOpen.FlushAsync();
-                                }
-
                             }
 
-                            folder.IsDownloading = false;
+                            ProgressMails++;
 
-                            try
+                            if (folder.Selected == false)
+                                continue;
+
+                            // msg not exsist
+                            if (msg.From == null)
                             {
-                                imapFodler.Close();
+                                log.Add("Error: can't save message id " + item.UniqueId + " from folder '" + folder.Folder + "' because has no From field");
+                                continue;
                             }
-                            catch (MailKit.ServiceNotConnectedException)
-                            {
 
+                            downloadedEmails++;
+                            folder.DownloadedItems++;
+
+                            messageIdSafeName = System.Text.RegularExpressions.Regex.Replace(msg.Headers["Message-ID"] + "", "[<>\\/:]", "");
+
+                            string msgPrefix = item.UniqueId + "";
+
+                            if (item.Flags != null && !item.Flags.Value.HasFlag(MessageFlags.Seen))
+                            {
+                                msgPrefix += "_N";
                             }
 
-                            log.Add("Folder: " + folder.Folder + "\t\t" + folder.DownloadedItems + " emails");
-
-                        }
-
-                    });
-
-                    if (pcap != null && pcap.IsCapturing)
-                    {
-                        // Add pcap file to archive
-                        pcap.StopCapture();
-                        var pcapName = pcap.OutputFile.Split('\\').Last();
-                        if (File.Exists(pcap.OutputFile))
-                        {
-                            using (FileStream fileStream = new FileStream(pcap.OutputFile, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+                            if (string.IsNullOrEmpty(messageIdSafeName))
                             {
-                                var entry = archive.CreateEntry(pcapName);
+                                messageIdSafeName = Guid.NewGuid().ToString();
+                            }
+
+                            var destFileName = destZipFolder + "\\" + msgPrefix + "_" + messageIdSafeName + ".eml";
+
+                            lock (writeEntryBlock)
+                            {
+                                var entry = archive.CreateEntry(destFileName);
+                                entry.LastWriteTime = item.InternalDate.Value;
                                 using (Stream s = entry.Open())
                                 {
-                                    fileStream.CopyTo(s);
+                                    msg.WriteTo(s);
+                                    fileSize = s.Position;
                                     s.Close();
+
                                 }
                             }
+
+                            DownloadSpeed.Add(new Tuple<DateTime, double, long>(dt, DateTime.Now.Subtract(dt).TotalMilliseconds, fileSize));
+
                         }
 
-                        log.Add("Pcap: " + pcapName + "");
-                    }
-                    else
-                    {
-                        log.Add("No Pcap file.");
+                        folder.IsDownloading = false;
+
+                        try
+                        {
+                            imapFodler.Close();
+                        }
+                        catch (MailKit.ServiceNotConnectedException)
+                        {
+
+                        }
+
+                        log.Add("Folder: " + folder.Folder + "\t\t" + downloadedEmails + " emails");
+
+                        totalMessagesDownloaded += downloadedEmails;
+
                     }
 
-                }
+                });
 
             }
+
 
             log.Add("");
 
