@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Timers;
 using Securcube.ImapDownloader.Data;
 using System.Windows.Controls;
+using PcapDotNet.Core;
 
 namespace SecurCube.ImapDownloader
 {
@@ -16,7 +17,7 @@ namespace SecurCube.ImapDownloader
     {
 
         Data.DataContext dc = new Data.DataContext();
-        object CapturePcapDevice { get; set; }
+        LivePacketDevice CapturePcapDevice { get; set; }
 
         public MainWindow()
         {
@@ -158,7 +159,7 @@ namespace SecurCube.ImapDownloader
 
             long result = 0;
 
-            result = await Downloader.DownloadMailsAsync(dc, CapturePcapDevice as PcapDotNet.Core.LivePacketDevice);
+            result = await Downloader.DownloadMailsAsync(dc, CapturePcapDevice);
 
             myTimer.Stop();
 
@@ -253,30 +254,21 @@ namespace SecurCube.ImapDownloader
             {
                 cb.Items.RemoveAt(1);
             }
-
-            try
+            foreach (var item in LivePacketDevice.AllLocalMachine)
             {
-                foreach (var item in PcapDotNet.Core.LivePacketDevice.AllLocalMachine)
+                var toolTip = "";
+
+                if (item.Addresses != null && item.Addresses.Any())
                 {
-                    var toolTip = "";
-
-                    if (item.Addresses != null && item.Addresses.Any())
-                    {
-                        toolTip = string.Join("\n", item.Addresses.Select(o => o.ToString()));
-                    }
-                    cb.Items.Add(new ComboBoxItem()
-                    {
-                        Content = item.Description,
-                        DataContext = item,
-                        ToolTip = toolTip
-                    });
+                    toolTip = string.Join("\n", item.Addresses.Select(o => o.ToString()));
                 }
+                cb.Items.Add(new ComboBoxItem()
+                {
+                    Content = item.Description,
+                    DataContext = item,
+                    ToolTip = toolTip
+                });
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message);
-            }
-
         }
 
         private void ComboBoxPCAPDevice_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -284,7 +276,7 @@ namespace SecurCube.ImapDownloader
             CapturePcapDevice = null;
             if (e.AddedItems != null && e.AddedItems.Count > 0)
             {
-                var selItem = (e.AddedItems[0] as ComboBoxItem).DataContext as PcapDotNet.Core.LivePacketDevice;
+                var selItem = (e.AddedItems[0] as ComboBoxItem).DataContext as LivePacketDevice;
                 if (selItem != null)
                     CapturePcapDevice = selItem;
 
